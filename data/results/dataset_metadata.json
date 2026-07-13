@@ -1,0 +1,46 @@
+{
+  "Breast Cancer Wisconsin": {
+    "source": "sklearn.datasets.load_breast_cancer",
+    "description": "Binary medical diagnosis dataset with 30 continuous features.",
+    "samples": 569,
+    "features": 30,
+    "class_distribution": {
+      "0": 212,
+      "1": 357
+    },
+    "severe_imbalance": false,
+    "high_dimensional": true
+  },
+  "Digits High-Dimensional": {
+    "source": "sklearn.datasets.load_digits, stratified 500-sample subset",
+    "description": "Ten-class handwritten digit images represented by 64 pixel features.",
+    "samples": 500,
+    "features": 64,
+    "class_distribution": {
+      "0": 50,
+      "1": 51,
+      "2": 49,
+      "3": 51,
+      "4": 50,
+      "5": 51,
+      "6": 50,
+      "7": 50,
+      "8": 48,
+      "9": 50
+    },
+    "severe_imbalance": false,
+    "high_dimensional": true
+  },
+  "Covertype Rare Class": {
+    "source": "bundled data/covertype_rare_class.npz generated from sklearn.datasets.fetch_covtype",
+    "description": "Real forest-cover dataset recast as a severe rare-class detection task.",
+    "samples": 5000,
+    "features": 54,
+    "class_distribution": {
+      "0": 4950,
+      "1": 50
+    },
+    "severe_imbalance": true,
+    "high_dimensional": true
+  }
+}

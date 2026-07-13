@@ -1,0 +1,22 @@
+dataset,n_estimators,test_accuracy,oob_accuracy
+Breast Cancer Wisconsin,1,0.8849557522123894,0.9044943820224719
+Breast Cancer Wisconsin,10,0.9469026548672567,0.9403973509933775
+Breast Cancer Wisconsin,25,0.9469026548672567,0.9451754385964912
+Breast Cancer Wisconsin,50,0.9469026548672567,0.9539473684210527
+Breast Cancer Wisconsin,100,0.9646017699115044,0.9583333333333334
+Breast Cancer Wisconsin,150,0.9646017699115044,0.9539473684210527
+Breast Cancer Wisconsin,200,0.9646017699115044,0.956140350877193
+Digits High-Dimensional,1,0.64,0.674074074074074
+Digits High-Dimensional,10,0.87,0.72544080604534
+Digits High-Dimensional,25,0.94,0.8675
+Digits High-Dimensional,50,0.92,0.915
+Digits High-Dimensional,100,0.93,0.9425
+Digits High-Dimensional,150,0.96,0.9375
+Digits High-Dimensional,200,0.96,0.95
+Covertype Rare Class,1,0.976,0.9833243679397525
+Covertype Rare Class,10,0.993,0.9955202606393809
+Covertype Rare Class,25,0.991,0.9967676767676767
+Covertype Rare Class,50,0.993,0.9975757575757576
+Covertype Rare Class,100,0.993,0.9975757575757576
+Covertype Rare Class,150,0.993,0.9973737373737374
+Covertype Rare Class,200,0.993,0.9977777777777778

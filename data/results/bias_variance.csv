@@ -1,0 +1,5 @@
+dataset,model,bias_squared,variance,expected_loss
+Balanced Synthetic Binary,Decision Stump,0.3425,0.15409166666666665,0.36294166666666666
+Balanced Synthetic Binary,Single Tree,0.1025,0.1724,0.20641666666666666
+Balanced Synthetic Binary,AdaBoost,0.18666666666666668,0.09998333333333333,0.21241666666666667
+Balanced Synthetic Binary,Random Forest,0.08583333333333333,0.07265,0.12175
