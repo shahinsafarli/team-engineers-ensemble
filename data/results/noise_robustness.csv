@@ -1,0 +1,19 @@
+dataset,noise_fraction,model,accuracy
+Breast Cancer Wisconsin,0.05,AdaBoost,0.9469026548672567
+Breast Cancer Wisconsin,0.05,Random Forest,0.9557522123893806
+Breast Cancer Wisconsin,0.1,AdaBoost,0.9469026548672567
+Breast Cancer Wisconsin,0.1,Random Forest,0.9292035398230089
+Breast Cancer Wisconsin,0.2,AdaBoost,0.9292035398230089
+Breast Cancer Wisconsin,0.2,Random Forest,0.9469026548672567
+Digits High-Dimensional,0.05,AdaBoost,0.78
+Digits High-Dimensional,0.05,Random Forest,0.92
+Digits High-Dimensional,0.1,AdaBoost,0.77
+Digits High-Dimensional,0.1,Random Forest,0.94
+Digits High-Dimensional,0.2,AdaBoost,0.69
+Digits High-Dimensional,0.2,Random Forest,0.91
+Covertype Rare Class,0.05,AdaBoost,0.988
+Covertype Rare Class,0.05,Random Forest,0.99
+Covertype Rare Class,0.1,AdaBoost,0.986
+Covertype Rare Class,0.1,Random Forest,0.992
+Covertype Rare Class,0.2,AdaBoost,0.99
+Covertype Rare Class,0.2,Random Forest,0.991

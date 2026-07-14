@@ -1,0 +1,13 @@
+dataset,model,accuracy,macro_f1,auc_roc
+Breast Cancer Wisconsin,Decision Tree (ours),0.9557522123893806,0.9518944231587909,0.9453386988598257
+Breast Cancer Wisconsin,Decision Stump (ours),0.8230088495575221,0.8189102564102564,0.8397048960429241
+Breast Cancer Wisconsin,Decision Tree (sklearn reference),0.9380530973451328,0.9333558008256804,0.9312541918175722
+Breast Cancer Wisconsin,Tree accuracy gap vs sklearn,0.017699,,
+Digits High-Dimensional,Decision Tree (ours),0.82,0.816488551942516,0.9
+Digits High-Dimensional,Decision Stump (ours),0.17,0.058532165508909696,0.6644444444444444
+Digits High-Dimensional,Decision Tree (sklearn reference),0.84,0.8307076403129035,0.9111111111111109
+Digits High-Dimensional,Tree accuracy gap vs sklearn,0.02,,
+Covertype Rare Class,Decision Tree (ours),0.993,0.7923526445373914,0.748989898989899
+Covertype Rare Class,Decision Stump (ours),0.95,0.6299037749814952,0.9747474747474748
+Covertype Rare Class,Decision Tree (sklearn reference),0.993,0.8140226892319137,0.7984848484848485
+Covertype Rare Class,Tree accuracy gap vs sklearn,0.0,,
