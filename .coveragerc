@@ -1,0 +1,3 @@
+[run]
+# Measure the complete src/ tree. Nothing is hidden from the coverage gate.
+omit =
