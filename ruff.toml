@@ -1,0 +1,8 @@
+# Project-wide lint configuration for the final quality gates.
+line-length = 120
+target-version = "py312"
+
+[lint]
+# run_all.py must configure thread-count variables and the project path
+# before importing numerical libraries.
+per-file-ignores = { "src/experiments/run_all.py" = ["E402"] }
