@@ -1161,7 +1161,7 @@ def run_bias_variance(
     ax.bar(x - width / 2, bias, width, label="Bias^2")
     ax.bar(x + width / 2, variance, width, label="Variance")
     ax.set_xticks(x)
-    ax.set_xticklabels([row["model"] for row in rows])
+    ax.set_xticklabels([row["model"] for row in rows], rotation=10, ha="right")
     ax.set_ylabel("0-1 decomposition component")
     ax.set_title("Bias-variance on Breast Cancer Wisconsin")
     ax.legend()
