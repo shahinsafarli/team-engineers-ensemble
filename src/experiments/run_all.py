@@ -10,11 +10,13 @@ from __future__ import annotations
 
 import argparse
 import gc
+import json
 import logging
 import os
 import subprocess
 import sys
 import tempfile
+import time
 
 # Keep numerical-library thread pools deterministic and prevent shutdown hangs.
 for _thread_env in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
@@ -56,7 +58,6 @@ def _configure_logging() -> None:
 
 import matplotlib.pyplot as plt
 import numpy as np
-from sklearn.datasets import fetch_covtype, load_breast_cancer, load_digits, make_classification
 from sklearn.ensemble import RandomForestClassifier as SklearnRandomForestClassifier
 from sklearn.manifold import TSNE
 from sklearn.metrics import adjusted_rand_score
@@ -66,27 +67,29 @@ from sklearn.tree import DecisionTreeClassifier as SklearnDecisionTreeClassifier
 from src.bagging.random_forest import RandomForestClassifier
 from src.boosting.adaboost import AdaBoostClassifier
 from src.boosting.gradient_boosting import GradientBoostingClassifier
+from src.experiments.datasets import load_all_datasets
 from src.experiments.utils import (
     DatasetBundle,
     aligned_proba,
+    dataset_fingerprint,
     ensure_output_dirs,
     mean_std_rows,
+    paired_ttest_rows,
     slugify,
     write_csv,
     write_json,
 )
 from src.metrics.evaluation import bias_variance_01, classification_metrics
 from src.trees.decision_tree import DecisionStump, DecisionTree
-from src.unsupervised.dbscan import DBSCAN
+from src.unsupervised.dbscan import DBSCAN, kth_neighbor_distances
 from src.unsupervised.kmeans import KMeans
 from src.unsupervised.pca import PCA
 from src.utils.preprocessing import (
-    StandardScaler,
+    MixedTypePreprocessor,
     class_distribution,
     flip_labels,
     random_oversample,
-    stratified_subsample,
-    stratified_train_test_split,
+    stratified_train_test_indices,
 )
 
 
@@ -98,6 +101,25 @@ from src.utils.preprocessing import (
 ADABOOST_LEARNING_RATE = 0.6
 RANDOM_FOREST_MAX_FEATURES = "sqrt"
 SEVERE_IMBALANCE_TARGET_RATIO = 0.25
+CANONICAL_DATASET_ROWS = {
+    "Breast Cancer Wisconsin": 569,
+    "Adult Income": 48_842,
+    "Covertype": 50_000,
+    "MNIST2Class": 14_780,
+}
+RESULT_TABLE_ROWS = {
+    "baseline_metrics.csv": 16,
+    "adaboost_scaling.csv": 84,
+    "random_forest_estimators.csv": 28,
+    "random_forest_depth.csv": 32,
+    "head_to_head_cv.csv": 80,
+    "head_to_head_summary.csv": 16,
+    "head_to_head_significance.csv": 4,
+    "noise_robustness.csv": 24,
+    "bias_variance.csv": 4,
+    "unsupervised_summary.csv": 4,
+    "gradient_boosting_bonus.csv": 2,
+}
 
 
 @dataclass
@@ -117,16 +139,32 @@ def main() -> None:
     parser.add_argument(
         "--skip-downloads",
         action="store_true",
-        help="Avoid network access and use the bundled rare-class Covertype subset.",
+        help="Avoid network access and require all raw/interim caches to exist.",
+    )
+    parser.add_argument(
+        "--reuse-results",
+        action="store_true",
+        help="Validate and reuse a complete matching canonical result set instead of fitting models.",
     )
     parser.add_argument(
         "--recompute-heavy",
         action="store_true",
-        help="Recompute long Random Forest, CV, noise, and bias-variance sweeps instead of reusing bundled deterministic outputs.",
+        help="Backward-compatible alias for the default full-recomputation behavior.",
+    )
+    parser.add_argument(
+        "--n-jobs",
+        type=int,
+        default=min(4, os.cpu_count() or 1),
+        help="Workers for custom and sklearn Random Forest fits (use 1 on limited-memory Windows systems).",
     )
     parser.add_argument("--_rf-depth-worker-input", default=None, help=argparse.SUPPRESS)
     parser.add_argument("--_rf-depth-worker-output", default=None, help=argparse.SUPPRESS)
     args = parser.parse_args()
+
+    if args.n_jobs == 0 or args.n_jobs < -1:
+        parser.error("--n-jobs must be -1 or a positive integer")
+    if args.reuse_results and args.recompute_heavy:
+        parser.error("--reuse-results and --recompute-heavy cannot be combined")
 
     if args._rf_depth_worker_input is not None:
         if args._rf_depth_worker_output is None:
@@ -139,50 +177,74 @@ def main() -> None:
 
     figures_dir, results_dir = ensure_output_dirs(ROOT)
     datasets = load_datasets(args.seed, skip_downloads=args.skip_downloads)
-    metadata = {
-        dataset.name: {
-            "source": dataset.source,
-            "description": dataset.description,
-            "samples": int(dataset.X.shape[0]),
-            "features": int(dataset.X.shape[1]),
-            "class_distribution": class_distribution(dataset.y),
-            "severe_imbalance": dataset.severe_imbalance,
-            "high_dimensional": dataset.high_dimensional,
-        }
-        for dataset in datasets
-    }
+    metadata = build_dataset_metadata(datasets, args.seed)
+    if args.reuse_results:
+        validate_reusable_outputs(results_dir, figures_dir, metadata, args.seed)
+        logger.info("Validated and reused the complete canonical result set in %s", results_dir)
+        return
+
     write_json(results_dir / "dataset_metadata.json", metadata)
+    timings: dict[str, float] = {}
 
     logger.info("Running baselines...")
-    baseline_rows = run_baselines(datasets, results_dir, args.seed)
+    baseline_rows = _timed(timings, "baselines", run_baselines, datasets, results_dir, args.seed)
     logger.info("Running AdaBoost scaling...")
-    run_adaboost_scaling(datasets, figures_dir, results_dir, args.seed)
-    heavy_csv_outputs = [
-        results_dir / "random_forest_estimators.csv",
-        results_dir / "random_forest_depth.csv",
-        results_dir / "head_to_head_cv.csv",
-        results_dir / "head_to_head_summary.csv",
-        results_dir / "noise_robustness.csv",
-        results_dir / "bias_variance.csv",
-    ]
-    if args.recompute_heavy or not all(path.exists() for path in heavy_csv_outputs):
-        logger.info("Running Random Forest scaling...")
-        run_rf_scaling(datasets, figures_dir, results_dir, args.seed)
-        logger.info("Running head-to-head cross-validation...")
-        head_to_head_rows = run_head_to_head(datasets, results_dir, args.seed)
-        logger.info("Running noise robustness...")
-        run_noise_robustness(datasets, figures_dir, results_dir, args.seed)
-        logger.info("Running bias-variance decomposition...")
-        run_bias_variance(datasets[0], figures_dir, results_dir, args.seed)
-        heavy_sweep_mode = "recomputed"
-    else:
-        logger.info("Validating bundled deterministic long-sweep tables and regenerating their figures...")
-        head_to_head_rows = validate_and_replot_heavy_outputs(results_dir, figures_dir)
-        heavy_sweep_mode = "validated_bundled_tables_replotted_figures"
+    _timed(timings, "adaboost_scaling", run_adaboost_scaling, datasets, figures_dir, results_dir, args.seed)
+    logger.info("Running Random Forest scaling...")
+    _timed(
+        timings,
+        "random_forest_scaling",
+        run_rf_scaling,
+        datasets,
+        figures_dir,
+        results_dir,
+        args.seed,
+        args.n_jobs,
+    )
+    logger.info("Running head-to-head cross-validation...")
+    head_to_head_rows = _timed(
+        timings,
+        "head_to_head_cv",
+        run_head_to_head,
+        datasets,
+        results_dir,
+        args.seed,
+        args.n_jobs,
+    )
+    logger.info("Running noise robustness...")
+    _timed(
+        timings,
+        "noise_robustness",
+        run_noise_robustness,
+        datasets,
+        figures_dir,
+        results_dir,
+        args.seed,
+        args.n_jobs,
+    )
+    logger.info("Running Breast Cancer bias-variance decomposition...")
+    _timed(
+        timings,
+        "bias_variance",
+        run_bias_variance,
+        datasets[0],
+        figures_dir,
+        results_dir,
+        args.seed,
+        args.n_jobs,
+    )
     logger.info("Running unsupervised analysis...")
-    run_unsupervised(datasets, figures_dir, results_dir, args.seed)
+    _timed(timings, "unsupervised", run_unsupervised, datasets, figures_dir, results_dir, args.seed)
     logger.info("Running Gradient Boosting bonus...")
-    run_gradient_boosting_bonus(datasets[0], figures_dir, results_dir, args.seed)
+    _timed(
+        timings,
+        "gradient_boosting_bonus",
+        run_gradient_boosting_bonus,
+        datasets[0],
+        figures_dir,
+        results_dir,
+        args.seed,
+    )
 
     write_json(
         results_dir / "run_summary.json",
@@ -191,149 +253,94 @@ def main() -> None:
             "datasets": metadata,
             "baseline_rows": len(baseline_rows),
             "head_to_head_rows": len(head_to_head_rows),
-            "heavy_sweep_mode": heavy_sweep_mode,
+            "run_mode": "full_recomputation",
+            "n_jobs": args.n_jobs,
+            "experiment_contract": experiment_contract(args.seed, metadata),
+            "timings_seconds": timings,
             "outputs": {
                 "results_dir": "data/results",
                 "figures_dir": "figures",
             },
         },
     )
+    validate_generated_outputs(results_dir, figures_dir)
     logger.info("Wrote results to %s", results_dir)
     logger.info("Wrote figures to %s", figures_dir)
 
 
+def _timed(timings: dict[str, float], name: str, function: Any, *args: Any) -> Any:
+    started = time.perf_counter()
+    result = function(*args)
+    timings[name] = round(time.perf_counter() - started, 3)
+    return result
+
+
+def build_dataset_metadata(datasets: list[DatasetBundle], seed: int) -> dict[str, Any]:
+    actual = {dataset.name: int(dataset.X.shape[0]) for dataset in datasets}
+    if actual != CANONICAL_DATASET_ROWS:
+        raise RuntimeError(f"Dataset contract mismatch: expected {CANONICAL_DATASET_ROWS}, got {actual}")
+    return {
+        dataset.name: {
+            "source": dataset.source,
+            "source_version": dataset.source_version,
+            "description": dataset.description,
+            "selection_rule": dataset.selection_rule,
+            "samples": int(dataset.X.shape[0]),
+            "raw_samples": dataset.raw_samples,
+            "features": int(dataset.X.shape[1]),
+            "class_distribution": class_distribution(dataset.y),
+            "preprocessing": dataset.preprocessing,
+            "severe_imbalance": dataset.severe_imbalance,
+            "high_dimensional": dataset.high_dimensional,
+            "seed": seed,
+            "fingerprint_sha256": dataset_fingerprint(dataset),
+        }
+        for dataset in datasets
+    }
+
+
+def experiment_contract(seed: int, metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "seed": seed,
+        "dataset_names_and_rows": CANONICAL_DATASET_ROWS,
+        "dataset_fingerprints": {
+            name: values["fingerprint_sha256"] for name, values in metadata.items()
+        },
+        "grids": {
+            "adaboost_estimators": [1, *range(10, 201, 10)],
+            "random_forest_estimators": [1, 10, 25, 50, 100, 150, 200],
+            "random_forest_depth": [1, 2, 3, 5, 8, 12, 16, 20],
+            "cross_validation_folds": 5,
+            "noise_fractions": [0.05, 0.1, 0.2],
+            "bias_variance_bootstraps": 100,
+            "dbscan_k": 5,
+        },
+        "expected_table_rows": RESULT_TABLE_ROWS,
+    }
+
+
 def load_datasets(seed: int, skip_downloads: bool = False) -> list[DatasetBundle]:
-    breast = load_breast_cancer()
-    breast_dataset = DatasetBundle(
-        name="Breast Cancer Wisconsin",
-        X=breast.data.astype(float),
-        y=breast.target.astype(object),
-        source="sklearn.datasets.load_breast_cancer",
-        description="Binary medical diagnosis dataset with 30 continuous features.",
-        high_dimensional=True,
+    """Compatibility wrapper around the isolated authoritative loaders."""
+
+    return load_all_datasets(seed=seed, skip_downloads=skip_downloads, root=ROOT)
+
+
+def prepare_index_split(
+    dataset: DatasetBundle,
+    train_indices: np.ndarray,
+    test_indices: np.ndarray,
+    seed: int,
+) -> SplitData:
+    """Fit preprocessing on train indices and apply treatment to train only."""
+
+    preprocessor = MixedTypePreprocessor(
+        dataset.resolved_numeric_columns,
+        dataset.categorical_columns,
     )
-
-    digits = load_digits()
-    X_digits, y_digits = stratified_subsample(digits.data, digits.target, 500, seed)
-    digits_dataset = DatasetBundle(
-        name="Digits High-Dimensional",
-        X=X_digits,
-        y=y_digits,
-        source="sklearn.datasets.load_digits, stratified 500-sample subset",
-        description="Ten-class handwritten digit images represented by 64 pixel features.",
-        high_dimensional=True,
-    )
-
-    severe_dataset = load_severe_imbalance_dataset(seed, skip_downloads)
-    return [breast_dataset, digits_dataset, severe_dataset]
-
-
-# The rare-class subset previously totaled only 500 rows (5 positive /
-# 495 negative), which is statistically thin for a "severe imbalance"
-# case study. These constants raise the subset to >=5000 rows while
-# preserving the same ~1% positive rate, so the class-imbalance ratio
-# (and therefore the qualitative behavior being studied) is unchanged.
-COVERTYPE_POSITIVE_SAMPLES = 50
-COVERTYPE_NEGATIVE_SAMPLES = 4950
-COVERTYPE_TOTAL_SAMPLES = COVERTYPE_POSITIVE_SAMPLES + COVERTYPE_NEGATIVE_SAMPLES
-
-
-def load_severe_imbalance_dataset(seed: int, skip_downloads: bool) -> DatasetBundle:
-    rng = np.random.default_rng(seed)
-    local_cache = ROOT / "data" / "covertype_rare_class.npz"
-    if local_cache.exists():
-        cached = np.load(local_cache, allow_pickle=False)
-        cached_X = cached["X"].astype(float)
-        cached_y = cached["y"].astype(object)
-        if cached_X.shape[0] < COVERTYPE_TOTAL_SAMPLES:
-            if skip_downloads:
-                logger.warning(
-                    "data/covertype_rare_class.npz has only %d rows (< %d target); "
-                    "using it as-is because --skip-downloads was passed. Re-run "
-                    "without --skip-downloads (network required) to regenerate the "
-                    "full-size subset.",
-                    cached_X.shape[0],
-                    COVERTYPE_TOTAL_SAMPLES,
-                )
-            else:
-                logger.info(
-                    "Bundled Covertype cache has %d rows (< %d target); "
-                    "regenerating from sklearn.datasets.fetch_covtype.",
-                    cached_X.shape[0],
-                    COVERTYPE_TOTAL_SAMPLES,
-                )
-                return _fetch_and_cache_severe_imbalance_dataset(rng, local_cache)
-        return DatasetBundle(
-            name="Covertype Rare Class",
-            X=cached_X,
-            y=cached_y,
-            source="bundled data/covertype_rare_class.npz generated from sklearn.datasets.fetch_covtype",
-            description="Real forest-cover dataset recast as a severe rare-class detection task.",
-            severe_imbalance=True,
-            high_dimensional=True,
-        )
-
-    if skip_downloads:
-        raise FileNotFoundError(
-            "data/covertype_rare_class.npz is required for --skip-downloads. "
-            "Restore the bundled file or run without --skip-downloads to fetch it."
-        )
-
-    return _fetch_and_cache_severe_imbalance_dataset(rng, local_cache)
-
-
-def _fetch_and_cache_severe_imbalance_dataset(
-    rng: np.random.Generator,
-    local_cache: Path,
-) -> DatasetBundle:
-    """Download Covertype and (re)build the cached rare-class subset.
-
-    Requires network access to ``sklearn.datasets.fetch_covtype``; raises
-    whatever error scikit-learn raises if the download is unavailable.
-    """
-
-    covtype = fetch_covtype(data_home=str(ROOT / "data" / "sklearn"))
-    X = covtype.data.astype(float)
-    y = (covtype.target == 4).astype(int)
-    positive = np.where(y == 1)[0]
-    negative = np.where(y == 0)[0]
-    chosen = np.concatenate(
-        [
-            rng.choice(positive, size=COVERTYPE_POSITIVE_SAMPLES, replace=False),
-            rng.choice(negative, size=COVERTYPE_NEGATIVE_SAMPLES, replace=False),
-        ]
-    )
-    rng.shuffle(chosen)
-    local_cache.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        local_cache,
-        X=X[chosen].astype(float),
-        y=y[chosen].astype(np.int64),
-    )
-    return DatasetBundle(
-        name="Covertype Rare Class",
-        X=X[chosen],
-        y=y[chosen].astype(object),
-        source=(
-            f"sklearn.datasets.fetch_covtype, class 4 vs. rest, "
-            f"{COVERTYPE_TOTAL_SAMPLES}-row subset"
-        ),
-        description="Real forest-cover dataset recast as a severe rare-class detection task.",
-        severe_imbalance=True,
-        high_dimensional=True,
-    )
-
-
-def prepare_split(dataset: DatasetBundle, seed: int, test_size: float = 0.2) -> SplitData:
-    X_train, X_test, y_train, y_test = stratified_train_test_split(
-        dataset.X,
-        dataset.y,
-        test_size=test_size,
-        random_state=seed,
-    )
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
+    X_train_scaled = preprocessor.fit_transform(dataset.X[train_indices])
+    X_test_scaled = preprocessor.transform(dataset.X[test_indices])
+    y_train = dataset.y[train_indices].astype(object)
+    y_test = dataset.y[test_indices].astype(object)
     if dataset.severe_imbalance:
         X_fit, y_fit = random_oversample(
             X_train_scaled,
@@ -344,6 +351,15 @@ def prepare_split(dataset: DatasetBundle, seed: int, test_size: float = 0.2) -> 
     else:
         X_fit, y_fit = X_train_scaled, y_train
     return SplitData(X_train_scaled, X_test_scaled, y_train, y_test, X_fit, y_fit)
+
+
+def prepare_split(dataset: DatasetBundle, seed: int, test_size: float = 0.2) -> SplitData:
+    train_indices, test_indices = stratified_train_test_indices(
+        dataset.y,
+        test_size=test_size,
+        random_state=seed,
+    )
+    return prepare_index_split(dataset, train_indices, test_indices, seed)
 
 
 def evaluate_model(
@@ -358,7 +374,7 @@ def evaluate_model(
 
 
 def read_csv_rows(path: Path) -> list[dict[str, Any]]:
-    """Read an existing result table when default run uses bundled heavy outputs."""
+    """Read an existing result table for validation/replotting."""
 
     csv_module = __import__("csv")
     with path.open(newline="", encoding="utf-8") as handle:
@@ -366,33 +382,35 @@ def read_csv_rows(path: Path) -> list[dict[str, Any]]:
 
 
 def validate_and_replot_heavy_outputs(results_dir: Path, figures_dir: Path) -> list[dict[str, Any]]:
-    """Validate deterministic long-sweep CSVs and regenerate their figures.
-
-    The from-scratch Random Forest/CV/noise/bias sweeps are intentionally more
-    expensive than the short baseline and unsupervised runs. The default
-    command therefore ships the deterministic long-sweep tables, checks their
-    schema and row counts, and redraws the associated figures from those
-    tables. Passing ``--recompute-heavy`` recomputes the same tables from
-    models.
-    """
+    """Validate exact canonical long-sweep CSVs and regenerate aggregate figures."""
 
     expected_tables: dict[str, tuple[set[str], int]] = {
-        "random_forest_estimators.csv": ({"dataset", "n_estimators", "test_accuracy", "oob_accuracy"}, 21),
-        "random_forest_depth.csv": ({"dataset", "max_depth", "test_accuracy", "oob_accuracy"}, 24),
-        "head_to_head_cv.csv": ({"dataset", "fold", "model", "accuracy", "macro_f1", "auc_roc"}, 60),
-        "head_to_head_summary.csv": ({"dataset", "model", "accuracy_mean", "accuracy_std"}, 12),
-        "noise_robustness.csv": ({"dataset", "noise_fraction", "model", "accuracy"}, 18),
+        "random_forest_estimators.csv": ({"dataset", "n_estimators", "test_accuracy", "oob_accuracy"}, 28),
+        "random_forest_depth.csv": ({"dataset", "max_depth", "test_accuracy", "oob_accuracy"}, 32),
+        "head_to_head_cv.csv": ({"dataset", "fold", "model", "accuracy", "macro_f1", "auc_roc"}, 80),
+        "head_to_head_summary.csv": ({"dataset", "model", "accuracy_mean", "accuracy_std"}, 16),
+        "noise_robustness.csv": ({"dataset", "noise_fraction", "model", "accuracy"}, 24),
         "bias_variance.csv": ({"dataset", "model", "bias_squared", "variance", "expected_loss"}, 4),
     }
     loaded: dict[str, list[dict[str, Any]]] = {}
-    for filename, (required_columns, minimum_rows) in expected_tables.items():
+    for filename, (required_columns, exact_rows) in expected_tables.items():
         rows = read_csv_rows(results_dir / filename)
-        if len(rows) < minimum_rows:
-            raise RuntimeError(f"{filename} has {len(rows)} rows; expected at least {minimum_rows}")
+        if len(rows) != exact_rows:
+            raise RuntimeError(f"{filename} has {len(rows)} rows; expected exactly {exact_rows}")
         if rows:
             missing = required_columns.difference(rows[0].keys())
             if missing:
                 raise RuntimeError(f"{filename} is missing required columns: {sorted(missing)}")
+            expected_names = (
+                {"Breast Cancer Wisconsin"}
+                if filename == "bias_variance.csv"
+                else set(CANONICAL_DATASET_ROWS)
+            )
+            actual_names = {str(row["dataset"]) for row in rows}
+            if actual_names != expected_names:
+                raise RuntimeError(
+                    f"{filename} dataset set mismatch: expected {sorted(expected_names)}, got {sorted(actual_names)}"
+                )
         loaded[filename] = rows
 
     replot_random_forest_scaling(
@@ -403,6 +421,81 @@ def validate_and_replot_heavy_outputs(results_dir: Path, figures_dir: Path) -> l
     replot_noise_robustness(loaded["noise_robustness.csv"], figures_dir)
     replot_bias_variance(loaded["bias_variance.csv"], figures_dir)
     return loaded["head_to_head_cv.csv"]
+
+
+def validate_reusable_outputs(
+    results_dir: Path,
+    figures_dir: Path,
+    metadata: dict[str, Any],
+    seed: int,
+) -> None:
+    """Reject stale reuse whenever data, seed, grids, rows, or figures differ."""
+
+    metadata_path = results_dir / "dataset_metadata.json"
+    summary_path = results_dir / "run_summary.json"
+    if not metadata_path.exists() or not summary_path.exists():
+        raise RuntimeError("--reuse-results requires dataset_metadata.json and run_summary.json")
+    stored_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+    if stored_metadata != metadata:
+        raise RuntimeError("Stored dataset metadata/fingerprints do not match the loaded four-dataset contract")
+    stored_summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    expected_contract = experiment_contract(seed, metadata)
+    if stored_summary.get("experiment_contract") != expected_contract:
+        raise RuntimeError("Stored seed, dataset contract, grids, or fingerprints are stale")
+    validate_generated_outputs(results_dir, figures_dir)
+    validate_and_replot_heavy_outputs(results_dir, figures_dir)
+
+
+def validate_generated_outputs(results_dir: Path, figures_dir: Path) -> None:
+    """Require exact canonical result-table rows, dataset sets, and 23 figures."""
+
+    four_dataset_tables = {
+        "baseline_metrics.csv",
+        "adaboost_scaling.csv",
+        "random_forest_estimators.csv",
+        "random_forest_depth.csv",
+        "head_to_head_cv.csv",
+        "head_to_head_summary.csv",
+        "head_to_head_significance.csv",
+        "noise_robustness.csv",
+        "unsupervised_summary.csv",
+    }
+    for filename, expected_rows in RESULT_TABLE_ROWS.items():
+        path = results_dir / filename
+        if not path.exists():
+            raise RuntimeError(f"Missing required result table: {filename}")
+        rows = read_csv_rows(path)
+        if len(rows) != expected_rows:
+            raise RuntimeError(f"{filename} has {len(rows)} rows; expected exactly {expected_rows}")
+        expected_names = (
+            set(CANONICAL_DATASET_ROWS)
+            if filename in four_dataset_tables
+            else {"Breast Cancer Wisconsin"}
+        )
+        actual_names = {str(row.get("dataset", "")) for row in rows}
+        if actual_names != expected_names:
+            raise RuntimeError(
+                f"{filename} dataset set mismatch: expected {sorted(expected_names)}, got {sorted(actual_names)}"
+            )
+
+    expected_figures = {
+        "adaboost_scaling.pdf",
+        "random_forest_estimators.pdf",
+        "random_forest_depth.pdf",
+        "noise_robustness.pdf",
+        "bias_variance.pdf",
+        "gradient_boosting_bonus.pdf",
+        "mnist2class_tsne_bonus.pdf",
+    }
+    for dataset_name in CANONICAL_DATASET_ROWS:
+        slug = slugify(dataset_name)
+        for suffix in ("pca_scree", "kmeans_elbow", "dbscan_kdistance", "pca_clusters"):
+            expected_figures.add(f"{slug}_{suffix}.pdf")
+    actual_figures = {path.name for path in figures_dir.glob("*.pdf")}
+    if actual_figures != expected_figures:
+        missing = sorted(expected_figures - actual_figures)
+        extra = sorted(actual_figures - expected_figures)
+        raise RuntimeError(f"Figure contract mismatch; missing={missing}, stale_or_extra={extra}")
 
 
 def _as_float(row: dict[str, Any], key: str) -> float:
@@ -418,17 +511,32 @@ def _dataset_order(rows: list[dict[str, Any]]) -> list[str]:
     return order
 
 
+def _dataset_figure_axes(
+    n_datasets: int,
+    sharey: bool = True,
+) -> tuple[Any, list[Any]]:
+    """Create a readable 2x2 aggregate layout for the four-study contract."""
+
+    if n_datasets < 1:
+        raise ValueError("At least one dataset is required for an aggregate figure")
+    if n_datasets == 1:
+        fig, axis = plt.subplots(figsize=(5, 3.5))
+        return fig, [axis]
+    fig, grid = plt.subplots(2, 2, figsize=(10, 7), sharey=sharey)
+    axes = list(np.asarray(grid).ravel())
+    for axis in axes[n_datasets:]:
+        axis.set_visible(False)
+    return fig, axes[:n_datasets]
+
+
 def replot_random_forest_scaling(
     estimator_rows: list[dict[str, Any]],
     depth_rows: list[dict[str, Any]],
     figures_dir: Path,
 ) -> None:
     datasets = _dataset_order(estimator_rows)
-    fig_n, axes_n = plt.subplots(1, len(datasets), figsize=(5 * len(datasets), 3.5), sharey=True)
-    fig_d, axes_d = plt.subplots(1, len(datasets), figsize=(5 * len(datasets), 3.5), sharey=True)
-    if len(datasets) == 1:
-        axes_n = [axes_n]
-        axes_d = [axes_d]
+    fig_n, axes_n = _dataset_figure_axes(len(datasets))
+    fig_d, axes_d = _dataset_figure_axes(len(datasets))
     for ax_n, ax_d, dataset in zip(axes_n, axes_d, datasets):
         rows_n = [row for row in estimator_rows if row["dataset"] == dataset]
         rows_n.sort(key=lambda row: int(float(row["n_estimators"])))
@@ -450,7 +558,7 @@ def replot_random_forest_scaling(
         ax_d.set_xlabel("Max depth")
         ax_d.grid(True, alpha=0.25)
     axes_n[0].set_ylabel("Accuracy")
-    axes_n[-1].legend(loc="best", fontsize=8)
+    axes_n[len(datasets) - 1].legend(loc="best", fontsize=8)
     axes_d[0].set_ylabel("Accuracy")
     fig_n.tight_layout()
     fig_d.tight_layout()
@@ -462,9 +570,7 @@ def replot_random_forest_scaling(
 
 def replot_noise_robustness(rows: list[dict[str, Any]], figures_dir: Path) -> None:
     datasets = _dataset_order(rows)
-    fig, axes = plt.subplots(1, len(datasets), figsize=(5 * len(datasets), 3.5), sharey=True)
-    if len(datasets) == 1:
-        axes = [axes]
+    fig, axes = _dataset_figure_axes(len(datasets))
     for ax, dataset in zip(axes, datasets):
         dataset_rows = [row for row in rows if row["dataset"] == dataset]
         models: list[str] = []
@@ -482,7 +588,7 @@ def replot_noise_robustness(rows: list[dict[str, Any]], figures_dir: Path) -> No
         ax.set_xlabel("Label-noise fraction")
         ax.grid(True, alpha=0.25)
     axes[0].set_ylabel("Clean-test accuracy")
-    axes[-1].legend(loc="best", fontsize=8)
+    axes[len(datasets) - 1].legend(loc="best", fontsize=8)
     fig.tight_layout()
     fig.savefig(figures_dir / "noise_robustness.pdf")
     plt.close(fig)
@@ -499,7 +605,7 @@ def replot_bias_variance(rows: list[dict[str, Any]], figures_dir: Path) -> None:
     ax.set_xticks(x)
     ax.set_xticklabels([str(row["model"]) for row in rows], rotation=10, ha="right")
     ax.set_ylabel("0-1 decomposition component")
-    ax.set_title("Bias-variance on balanced binary data")
+    ax.set_title("Bias-variance on Breast Cancer Wisconsin")
     ax.legend()
     ax.grid(True, axis="y", alpha=0.25)
     fig.tight_layout()
@@ -565,9 +671,7 @@ def run_adaboost_scaling(
     seed: int,
 ) -> None:
     rows: list[dict[str, Any]] = []
-    fig, axes = plt.subplots(1, len(datasets), figsize=(5 * len(datasets), 3.5), sharey=True)
-    if len(datasets) == 1:
-        axes = [axes]
+    fig, axes = _dataset_figure_axes(len(datasets))
     for ax, dataset in zip(axes, datasets):
         split = prepare_split(dataset, seed)
         model = AdaBoostClassifier(n_estimators=200, learning_rate=ADABOOST_LEARNING_RATE, random_state=seed)
@@ -577,28 +681,32 @@ def run_adaboost_scaling(
         rounds: list[int] = []
         staged_train = list(model.staged_predict(split.X_train))
         staged_test = list(model.staged_predict(split.X_test))
-        for round_index, (train_pred, test_pred) in enumerate(zip(staged_train, staged_test), start=1):
-            if round_index == 1 or round_index % 10 == 0 or round_index == len(staged_train):
-                train_error = 1.0 - float(np.mean(train_pred == split.y_train))
-                test_error = 1.0 - float(np.mean(test_pred == split.y_test))
-                rounds.append(round_index)
-                train_errors.append(train_error)
-                test_errors.append(test_error)
-                rows.append(
-                    {
-                        "dataset": dataset.name,
-                        "n_estimators": round_index,
-                        "train_error": train_error,
-                        "test_error": test_error,
-                    }
-                )
+        checkpoints = [1, *range(10, 201, 10)]
+        for round_index in checkpoints:
+            effective = min(round_index, len(staged_train))
+            train_pred = staged_train[effective - 1]
+            test_pred = staged_test[effective - 1]
+            train_error = 1.0 - float(np.mean(train_pred == split.y_train))
+            test_error = 1.0 - float(np.mean(test_pred == split.y_test))
+            rounds.append(round_index)
+            train_errors.append(train_error)
+            test_errors.append(test_error)
+            rows.append(
+                {
+                    "dataset": dataset.name,
+                    "n_estimators": round_index,
+                    "effective_estimators": effective,
+                    "train_error": train_error,
+                    "test_error": test_error,
+                }
+            )
         ax.plot(rounds, train_errors, marker="o", label="Train error")
         ax.plot(rounds, test_errors, marker="s", label="Test error")
         ax.set_title(dataset.name)
         ax.set_xlabel("Boosting rounds")
         ax.grid(True, alpha=0.25)
     axes[0].set_ylabel("Error")
-    axes[-1].legend(loc="best", fontsize=8)
+    axes[len(datasets) - 1].legend(loc="best", fontsize=8)
     fig.tight_layout()
     fig.savefig(figures_dir / "adaboost_scaling.pdf")
     plt.close(fig)
@@ -610,17 +718,15 @@ def run_rf_scaling(
     figures_dir: Path,
     results_dir: Path,
     seed: int,
+    n_jobs: int = 1,
 ) -> None:
     estimator_rows: list[dict[str, Any]] = []
     depth_rows: list[dict[str, Any]] = []
     n_grid = [1, 10, 25, 50, 100, 150, 200]
     depth_grid = [1, 2, 3, 5, 8, 12, 16, 20]
 
-    fig_n, axes_n = plt.subplots(1, len(datasets), figsize=(5 * len(datasets), 3.5), sharey=True)
-    fig_d, axes_d = plt.subplots(1, len(datasets), figsize=(5 * len(datasets), 3.5), sharey=True)
-    if len(datasets) == 1:
-        axes_n = [axes_n]
-        axes_d = [axes_d]
+    fig_n, axes_n = _dataset_figure_axes(len(datasets))
+    fig_d, axes_d = _dataset_figure_axes(len(datasets))
 
     for ax_n, ax_d, dataset in zip(axes_n, axes_d, datasets):
         logger.info("RF scaling: %s", dataset.name)
@@ -630,6 +736,7 @@ def run_rf_scaling(
             max_depth=None,
             max_features=RANDOM_FOREST_MAX_FEATURES,
             oob_score=True,
+            n_jobs=n_jobs,
             random_state=seed,
         ).fit(split.X_fit, split.y_fit)
         test_acc: list[float] = []
@@ -665,6 +772,7 @@ def run_rf_scaling(
                 split.y_test,
                 depth=depth,
                 seed=seed + depth,
+                n_jobs=n_jobs,
                 results_dir=results_dir,
             )
             acc = metrics["test_accuracy"]
@@ -685,7 +793,7 @@ def run_rf_scaling(
         gc.collect()
 
     axes_n[0].set_ylabel("Accuracy")
-    axes_n[-1].legend(loc="best", fontsize=8)
+    axes_n[len(datasets) - 1].legend(loc="best", fontsize=8)
     axes_d[0].set_ylabel("Accuracy")
     fig_n.tight_layout()
     fig_d.tight_layout()
@@ -705,6 +813,7 @@ def fit_rf_depth_in_worker(
     y_test: np.ndarray,
     depth: int,
     seed: int,
+    n_jobs: int,
     results_dir: Path,
 ) -> dict[str, float]:
     """Fit one depth-scaling forest in a short-lived process.
@@ -728,6 +837,7 @@ def fit_rf_depth_in_worker(
             y_test=np.asarray(y_test).astype(str),
             depth=np.array([depth], dtype=int),
             seed=np.array([seed], dtype=int),
+            n_jobs=np.array([n_jobs], dtype=int),
         )
         child_env = os.environ.copy()
         for thread_env in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
@@ -750,7 +860,7 @@ def fit_rf_depth_in_worker(
         )
         stderr_text = ""
         try:
-            for _ in range(240):  # 120 seconds, normally far less.
+            for _ in range(14_400):  # Up to two hours for full-data single-worker fits.
                 if output_path.exists() and output_path.stat().st_size > 0:
                     break
                 if process.poll() is not None:
@@ -790,11 +900,13 @@ def run_rf_depth_worker(input_path: Path, output_path: Path) -> None:
     y_test = payload["y_test"].astype(str)
     depth = int(payload["depth"][0])
     seed = int(payload["seed"][0])
+    n_jobs = int(payload["n_jobs"][0]) if "n_jobs" in payload.files else 1
     model = RandomForestClassifier(
         n_estimators=100,
         max_depth=depth,
         max_features=RANDOM_FOREST_MAX_FEATURES,
         oob_score=True,
+        n_jobs=n_jobs,
         random_state=seed,
     ).fit(X_fit, y_fit)
     pred = model.predict(X_test).astype(str)
@@ -852,6 +964,7 @@ def run_head_to_head(
     datasets: list[DatasetBundle],
     results_dir: Path,
     seed: int,
+    n_jobs: int = 1,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     for dataset in datasets:
@@ -860,20 +973,7 @@ def run_head_to_head(
         cv = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
         split_labels = dataset.y.astype(str)
         for fold, (train_idx, test_idx) in enumerate(cv.split(dataset.X, split_labels), start=1):
-            X_train, X_test = dataset.X[train_idx], dataset.X[test_idx]
-            y_train, y_test = dataset.y[train_idx], dataset.y[test_idx]
-            scaler = StandardScaler()
-            X_train = scaler.fit_transform(X_train)
-            X_test = scaler.transform(X_test)
-            if dataset.severe_imbalance:
-                X_fit, y_fit = random_oversample(
-                    X_train,
-                    y_train,
-                    random_state=seed + fold,
-                    target_ratio=SEVERE_IMBALANCE_TARGET_RATIO,
-                )
-            else:
-                X_fit, y_fit = X_train, y_train
+            split = prepare_index_split(dataset, train_idx, test_idx, seed + fold)
 
             models: list[tuple[str, Any]] = [
                 ("Single Tree", DecisionTree(random_state=seed + fold)),
@@ -891,6 +991,7 @@ def run_head_to_head(
                         n_estimators=100,
                         max_features=RANDOM_FOREST_MAX_FEATURES,
                         oob_score=True,
+                        n_jobs=n_jobs,
                         random_state=seed + fold,
                     ),
                 ),
@@ -899,13 +1000,14 @@ def run_head_to_head(
                     SklearnRandomForestClassifier(
                         n_estimators=100,
                         max_features=RANDOM_FOREST_MAX_FEATURES,
+                        n_jobs=n_jobs,
                         random_state=seed + fold,
                     ),
                 ),
             ]
             for model_name, model in models:
-                fit_estimator(model, X_fit, y_fit)
-                metrics = evaluate_model(model, X_test, y_test, labels.astype(object))
+                fit_estimator(model, split.X_fit, split.y_fit)
+                metrics = evaluate_model(model, split.X_test, split.y_test, labels.astype(object))
                 rows.append(
                     {
                         "dataset": dataset.name,
@@ -919,8 +1021,17 @@ def run_head_to_head(
         group_keys=["dataset", "model"],
         metric_keys=["accuracy", "macro_f1", "auc_roc"],
     )
+    significance = paired_ttest_rows(
+        rows,
+        group_keys=["dataset"],
+        pair_column="model",
+        pair_values=("Random Forest", "AdaBoost"),
+        fold_key="fold",
+        metric_keys=["accuracy", "macro_f1", "auc_roc"],
+    )
     write_csv(results_dir / "head_to_head_cv.csv", rows)
     write_csv(results_dir / "head_to_head_summary.csv", summary)
+    write_csv(results_dir / "head_to_head_significance.csv", significance)
     return rows
 
 
@@ -929,12 +1040,11 @@ def run_noise_robustness(
     figures_dir: Path,
     results_dir: Path,
     seed: int,
+    n_jobs: int = 1,
 ) -> None:
     noise_levels = [0.05, 0.10, 0.20]
     rows: list[dict[str, Any]] = []
-    fig, axes = plt.subplots(1, len(datasets), figsize=(5 * len(datasets), 3.5), sharey=True)
-    if len(datasets) == 1:
-        axes = [axes]
+    fig, axes = _dataset_figure_axes(len(datasets))
     for ax, dataset in zip(axes, datasets):
         split = prepare_split(dataset, seed)
         model_points: dict[str, list[float]] = {"AdaBoost": [], "Random Forest": []}
@@ -959,6 +1069,7 @@ def run_noise_robustness(
                     RandomForestClassifier(
                         n_estimators=100,
                         max_features=RANDOM_FOREST_MAX_FEATURES,
+                        n_jobs=n_jobs,
                         random_state=seed,
                     ),
                 ),
@@ -982,7 +1093,7 @@ def run_noise_robustness(
         ax.set_xlabel("Label-noise fraction")
         ax.grid(True, alpha=0.25)
     axes[0].set_ylabel("Clean-test accuracy")
-    axes[-1].legend(loc="best", fontsize=8)
+    axes[len(datasets) - 1].legend(loc="best", fontsize=8)
     fig.tight_layout()
     fig.savefig(figures_dir / "noise_robustness.pdf")
     plt.close(fig)
@@ -994,8 +1105,11 @@ def run_bias_variance(
     figures_dir: Path,
     results_dir: Path,
     seed: int,
+    n_jobs: int = 1,
 ) -> None:
-    split = make_balanced_bias_variance_split(seed)
+    if dataset.name != "Breast Cancer Wisconsin":
+        logger.warning("Bias-variance is specified for Breast Cancer Wisconsin; received %s", dataset.name)
+    split = prepare_split(dataset, seed)
     rng = np.random.default_rng(seed)
     rows: list[dict[str, Any]] = []
     model_predictions: dict[str, list[np.ndarray]] = {
@@ -1026,6 +1140,7 @@ def run_bias_variance(
                 RandomForestClassifier(
                     n_estimators=25,
                     max_features=RANDOM_FOREST_MAX_FEATURES,
+                    n_jobs=n_jobs,
                     random_state=seed + replicate,
                 ),
             ),
@@ -1036,7 +1151,7 @@ def run_bias_variance(
 
     for name, predictions in model_predictions.items():
         summary = bias_variance_01(np.asarray(predictions), split.y_test)
-        rows.append({"dataset": "Balanced Synthetic Binary", "model": name, **summary})
+        rows.append({"dataset": dataset.name, "model": name, **summary})
 
     fig, ax = plt.subplots(figsize=(5, 3.5))
     x = np.arange(len(rows))
@@ -1048,44 +1163,13 @@ def run_bias_variance(
     ax.set_xticks(x)
     ax.set_xticklabels([row["model"] for row in rows])
     ax.set_ylabel("0-1 decomposition component")
-    ax.set_title("Bias-variance on balanced binary data")
+    ax.set_title("Bias-variance on Breast Cancer Wisconsin")
     ax.legend()
     ax.grid(True, axis="y", alpha=0.25)
     fig.tight_layout()
     fig.savefig(figures_dir / "bias_variance.pdf")
     plt.close(fig)
     write_csv(results_dir / "bias_variance.csv", rows)
-
-
-def make_balanced_bias_variance_split(seed: int) -> SplitData:
-    X, y = make_classification(
-        n_samples=1560,
-        n_features=12,
-        n_informative=8,
-        n_redundant=2,
-        n_clusters_per_class=2,
-        weights=[0.5, 0.5],
-        class_sep=1.15,
-        flip_y=0.01,
-        random_state=seed + 100,
-    )
-    X_train, X_test, y_train, y_test = stratified_train_test_split(
-        X,
-        y,
-        test_size=1200 / 1560,
-        random_state=seed + 101,
-    )
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_test_scaled = scaler.transform(X_test)
-    return SplitData(
-        X_train=X_train_scaled,
-        X_test=X_test_scaled,
-        y_train=y_train.astype(object),
-        y_test=y_test.astype(object),
-        X_fit=X_train_scaled,
-        y_fit=y_train.astype(object),
-    )
 
 
 def run_unsupervised(
@@ -1097,8 +1181,11 @@ def run_unsupervised(
     rows: list[dict[str, Any]] = []
     for dataset in datasets:
         slug = slugify(dataset.name)
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(dataset.X)
+        preprocessor = MixedTypePreprocessor(
+            dataset.resolved_numeric_columns,
+            dataset.categorical_columns,
+        )
+        X_scaled = preprocessor.fit_transform(dataset.X)
         labels = dataset.y
         max_components = min(X_scaled.shape[1], X_scaled.shape[0] - 1)
         pca_full = PCA(n_components=max_components).fit(X_scaled)
@@ -1154,8 +1241,8 @@ def run_unsupervised(
             figures_dir / f"{slug}_pca_clusters.pdf",
         )
 
-        if dataset.name == "Digits High-Dimensional":
-            plot_tsne(X_scaled, labels, seed, figures_dir / "digits_tsne_bonus.pdf")
+        if dataset.name == "MNIST2Class":
+            plot_tsne(X_scaled, labels, seed, figures_dir / "mnist2class_tsne_bonus.pdf")
 
         rows.append(
             {
@@ -1169,13 +1256,6 @@ def run_unsupervised(
             }
         )
     write_csv(results_dir / "unsupervised_summary.csv", rows)
-
-
-def kth_neighbor_distances(X: np.ndarray, k: int) -> np.ndarray:
-    distances = np.linalg.norm(X[:, None, :] - X[None, :, :], axis=2)
-    distances.sort(axis=1)
-    kth = distances[:, min(k, distances.shape[1] - 1)]
-    return np.sort(kth)
 
 
 def plot_scree(cumulative: np.ndarray, title: str, path: Path) -> None:
@@ -1245,17 +1325,16 @@ def plot_pca_scatter(
 
 
 def plot_tsne(X: np.ndarray, y: np.ndarray, seed: int, path: Path) -> None:
-    X_sample, y_sample = stratified_subsample(X, y, max_samples=500, random_state=seed)
     embedding = TSNE(
         n_components=2,
         perplexity=30,
         init="pca",
         learning_rate="auto",
         random_state=seed,
-    ).fit_transform(X_sample)
+    ).fit_transform(X)
     fig, ax = plt.subplots(figsize=(4.5, 3.5))
-    ax.scatter(embedding[:, 0], embedding[:, 1], c=y_sample.astype(float), s=14, cmap="tab10", alpha=0.85)
-    ax.set_title("t-SNE bonus: Digits")
+    ax.scatter(embedding[:, 0], embedding[:, 1], c=y.astype(float), s=8, cmap="tab10", alpha=0.7)
+    ax.set_title("t-SNE bonus: MNIST2Class (all 14,780 rows)")
     ax.set_xlabel("t-SNE 1")
     ax.set_ylabel("t-SNE 2")
     ax.grid(True, alpha=0.2)
