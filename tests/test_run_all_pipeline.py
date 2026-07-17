@@ -161,7 +161,10 @@ def test_run_bias_variance_decomposition(tmp_path, monkeypatch):
     non-trivial ensembles, which is appropriate for the paper but too slow for a
     unit-test/autograder smoke path. Here we monkeypatch only the estimator
     classes and prepared real-data split so the same run_bias_variance control
-    flow, CSV writer, plotting, and 0-1 decomposition code are covered quickly.
+    flow, CSV writer, plotting, and 0-1 decomposition code are covered quickly,
+    while also ensuring that the complete evaluation pipeline executes correctly
+    and produces the expected output artifacts without the computational cost of
+    the full experimental setup.
     """
 
     class TinyClassifier:
