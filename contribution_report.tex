@@ -1,0 +1,125 @@
+\documentclass[10pt,a4paper,landscape]{article}
+\usepackage[margin=1.0cm]{geometry}
+\usepackage{booktabs}
+\usepackage{amssymb}
+\usepackage{tabularx}
+\usepackage{array}
+\usepackage[hidelinks]{hyperref}
+\renewcommand{\arraystretch}{1.12}
+\newcolumntype{Y}{>{\raggedright\arraybackslash}X}
+
+\title{Machine Learning Final Project\\Contribution Report}
+\author{Shahin Safarli, Gulnisa Abdurahmanli, Jeyhuna Sevdiyeva, Seljan Khasiyeva, Suleyman Allahverdiyev}
+\date{Spring 2026}
+
+\begin{document}
+\maketitle
+
+\noindent
+\textbf{Project:} Ensemble Methods: Boosting vs. Bagging.\quad
+\textbf{Release target:} \texttt{v1.0-final} after clean-clone verification.\quad
+\textbf{Team-size note:} This is a 5-member team; the team's course-staff approval/acceptance for the non-standard team size is handled in the external course communication/Moodle record.\\[0.35em]
+This report records the work allocation for the submitted project. The distribution is balanced by implementation difficulty, code volume, experiment ownership, testing responsibility, and written/slide material. The final GitHub history should match these responsibilities and the electronically agreed contribution statement.
+
+\begin{table}[h]
+\centering
+\scriptsize
+\begin{tabularx}{\textwidth}{@{}p{2.55cm}YYYYY@{}}
+\toprule
+\textbf{Member Name} & \textbf{Modules/Code Sections} & \textbf{Report Sections} & \textbf{Experiments} & \textbf{Slides} & \textbf{Other Tasks} \\
+\midrule
+\textbf{Shahin Safarli}
+&
+\texttt{src/boosting/adaboost.py}; \texttt{src/boosting/gradient\_boosting.py}; boosting exports and ensemble tests. Implemented SAMME AdaBoost, staged predictions, probability scoring, SAMME.R path, and Gradient Boosting bonus.
+&
+AdaBoost method, boosting math, scaling interpretation, Gradient Boosting bonus, and noise-sensitivity discussion.
+&
+AdaBoost scaling from 1--200 rounds; boosting side of noise robustness; Gradient Boosting vs. AdaBoost comparison.
+&
+Boosting method, AdaBoost scaling, head-to-head interpretation, and final conclusion slides.
+&
+Validation of staged predictions, estimator weights/errors, SAMME.R behavior, probability outputs, and final four-dataset runner integration. Approximate historical commit share from the supplied Git history: 23\%. Suggested prefix: \texttt{boosting:}.
+\\
+\midrule
+\textbf{Gulnisa Abdurahmanli}
+&
+\texttt{src/experiments/datasets.py}; \texttt{src/unsupervised/dbscan.py}; \texttt{src/utils/preprocessing.py}; \texttt{src/metrics/evaluation.py}; shared experiment utilities. Implemented authoritative loaders, exact largest-remainder selection, mixed-type fitted preprocessing, exact KD-tree DBSCAN, oversampling, metrics, and bias-variance helper.
+&
+Dataset contract, KD-tree DBSCAN method, Adult preprocessing and imbalance treatment, metrics explanation, noise robustness, and Breast Cancer bias-variance discussion.
+&
+Full-data DBSCAN k-distance and ARI analysis; seven-class Covertype setup; label-noise experiment; Breast Cancer bootstrap bias-variance decomposition.
+&
+Dataset, noise robustness, bias-variance, and imbalance/AUC explanation slides.
+&
+Validation of exact dataset sizes, DBSCAN parity and 50,000-point behavior, Adult preprocessing, metrics, oversampling, label flipping, and bias-variance outputs. Approximate historical commit share from the supplied Git history: 26\%. Suggested prefix: \texttt{dbscan-metrics:}.
+\\
+\midrule
+\textbf{Jeyhuna Sevdiyeva}
+&
+\texttt{src/trees/decision\_tree.py}; assignment-path wrappers in \texttt{src/trees/}. Implemented CART nodes, weighted impurity, entropy/Gini, positive-gain split rule, predictions, probabilities, feature importances, and stump specialization.
+&
+Decision Tree method, baseline sanity-check section, sklearn comparison explanation, and tree/stump limitations.
+&
+Baseline tree experiment; sklearn tree reference comparison; tree component of 5-fold head-to-head evaluation.
+&
+Implementation map, baseline sanity-check, and decision-tree defense slides.
+&
+Tree tests for simple splits, no-gain leaves, edge cases, weighted stumps, feature importances, and four-dataset sklearn-gap behavior. Approximate historical commit share from the supplied Git history: 14\%. Suggested prefix: \texttt{tree:}.
+\\
+\midrule
+\textbf{Seljan Khasiyeva}
+&
+\texttt{src/unsupervised/pca.py}; \texttt{src/unsupervised/kmeans.py}. Implemented PCA centering/covariance/eigendecomposition, explained-variance ratios, K-Means++ initialization, Lloyd updates, inertia, restarts, and cluster prediction.
+&
+PCA/K-Means method, scree and elbow interpretation, cluster-label alignment analysis, and t-SNE bonus context.
+&
+PCA scree plots; PCA projections; K-Means elbow curves; K-Means ARI; full-data t-SNE bonus visualization for MNIST2Class.
+&
+Unsupervised evidence slide and related conclusion points.
+&
+PCA and K-Means validation in unit tests; review of all four datasets' figure readability and report consistency. Approximate historical commit share from the supplied Git history: 14\%. Suggested prefix: \texttt{pca-kmeans:}.
+\\
+\midrule
+\textbf{Suleyman Allahverdiyev}
+&
+\texttt{src/bagging/random\_forest.py}; forest exports and wrapper. Implemented bootstrap sampling, OOB indices/score, feature subsampling, deterministic per-tree seeds, hard majority voting, probability alignment, and feature importances.
+&
+Random Forest method, bagging/variance explanation, OOB discussion, forest scaling interpretation, and MNIST2Class/seven-class Covertype conclusions.
+&
+Random Forest estimator scaling; max-depth scaling; OOB-vs-test comparison; Random Forest side of head-to-head and noise experiments.
+&
+Random Forest scaling, head-to-head result, and high-dimensional/noisy-data conclusion slides.
+&
+Forest tests for OOB score, probability shape, hard majority voting, deterministic behavior, feature importances, training accuracy, and worker-count propagation. Approximate historical commit share from the supplied Git history: 23\%. Suggested prefix: \texttt{forest:}.
+\\
+\bottomrule
+\end{tabularx}
+\caption{Contribution table using the columns required by the project statement.}
+\end{table}
+\clearpage
+
+\section*{AI Tool Disclosure}
+AI coding and writing assistants were used to scaffold, debug, and polish parts of the project. The team reviewed, tested, and edited the outputs; every member affirms that they can defend the code and written claims assigned to them. Substantial AI usage is also disclosed in the main report.
+
+\section*{Electronic Agreement / Signatures}
+The typed agreements below are the team's recorded 6 July approval of the
+original contribution allocation. Because the dataset migration materially
+changes the final deliverable, every member must review this revision and renew
+their agreement before submission; this source does not fabricate that external
+confirmation.
+
+\begin{center}
+\begin{tabular}{p{4.0cm}p{5.0cm}p{2.5cm}p{2.0cm}}
+\toprule
+\textbf{Member} & \textbf{Signature / Electronic Agreement} & \textbf{Date} & \textbf{Agree} \\
+\midrule
+Shahin Safarli & Typed e-agreement: SS & 2026-07-06 & $\checkmark$ \\
+Gulnisa Abdurahmanli & Typed e-agreement: GA & 2026-07-06 & $\checkmark$ \\
+Jeyhuna Sevdiyeva & Typed e-agreement: JS & 2026-07-06 & $\checkmark$ \\
+Seljan Khasiyeva & Typed e-agreement: SK & 2026-07-06 & $\checkmark$ \\
+Suleyman Allahverdiyev & Typed e-agreement: SA & 2026-07-06 & $\checkmark$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\end{document}
