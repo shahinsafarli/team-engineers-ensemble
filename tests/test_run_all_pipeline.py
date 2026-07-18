@@ -1,7 +1,7 @@
 """Coverage for src/experiments/run_all.py.
 
-Exercises the real experiment-driver functions on tiny synthetic datasets
-(instead of the full breast-cancer/digits/covertype sweeps) so the suite
+Exercises the real experiment-driver functions on tiny synthetic fixtures
+(instead of the full four-dataset sweeps) so the suite
 stays fast while still running every code path an autograder or CI box
 would hit. This directly addresses the previously-omitted
 src/experiments/* coverage gap: see REPRODUCIBILITY.md.
@@ -34,7 +34,7 @@ def _toy_dataset(name="Toy", n_samples=60, n_classes=2, severe_imbalance=False, 
         X=X.astype(float),
         y=y.astype(object),
         source="sklearn.datasets.make_classification (test fixture)",
-        description="Synthetic dataset for fast unit testing.",
+        description="Small deterministic fixture for fast unit testing.",
         severe_imbalance=severe_imbalance,
         high_dimensional=high_dimensional,
     )
@@ -68,18 +68,47 @@ def test_evaluate_model_and_fit_estimator():
     assert set(metrics) >= {"accuracy", "macro_f1", "auc_roc"}
 
 
-def test_load_datasets_uses_bundled_severe_imbalance_cache():
-    datasets = run_all.load_datasets(seed=0, skip_downloads=True)
-    names = {d.name for d in datasets}
-    assert names == {"Breast Cancer Wisconsin", "Digits High-Dimensional", "Covertype Rare Class"}
-    severe = next(d for d in datasets if d.name == "Covertype Rare Class")
-    assert severe.severe_imbalance is True
+def test_load_datasets_delegates_to_mocked_four_loader(monkeypatch):
+    mocked = [
+        _toy_dataset("Breast Cancer Wisconsin", n_samples=60, seed=0),
+        _toy_dataset("Adult Income", n_samples=60, seed=1),
+        _toy_dataset("Covertype", n_samples=70, n_classes=3, seed=2),
+        _toy_dataset("MNIST2Class", n_samples=60, seed=3),
+    ]
+    captured = {}
+
+    def fake_load_all_datasets(seed, skip_downloads, root):
+        captured.update(seed=seed, skip_downloads=skip_downloads, root=root)
+        return mocked
+
+    monkeypatch.setattr(run_all, "load_all_datasets", fake_load_all_datasets)
+    loaded = run_all.load_datasets(seed=42, skip_downloads=True)
+
+    assert loaded == mocked
+    assert captured == {"seed": 42, "skip_downloads": True, "root": run_all.ROOT}
 
 
-def test_load_severe_imbalance_dataset_requires_cache_when_skip_downloads(tmp_path, monkeypatch):
-    monkeypatch.setattr(run_all, "ROOT", tmp_path)
-    with pytest.raises(FileNotFoundError):
-        run_all.load_severe_imbalance_dataset(seed=0, skip_downloads=True)
+def test_prepare_split_handles_mixed_adult_values_without_leakage():
+    X = np.array(
+        [[float(index), "A" if index % 2 else "B"] for index in range(40)],
+        dtype=object,
+    )
+    X[-1, 1] = "held-out-only"
+    dataset = DatasetBundle(
+        name="Adult fixture",
+        X=X,
+        y=np.array([0] * 20 + [1] * 20, dtype=object),
+        source="fixture",
+        description="mixed values",
+        numeric_columns=(0,),
+        categorical_columns=(1,),
+    )
+
+    split = run_all.prepare_split(dataset, seed=2)
+
+    assert split.X_train.dtype == float and split.X_test.dtype == float
+    assert split.X_train.shape[0] + split.X_test.shape[0] == 40
+    assert np.all(np.isfinite(split.X_train)) and np.all(np.isfinite(split.X_test))
 
 
 def test_run_baselines_writes_csv_and_gap_row(tmp_path, toy_datasets):
@@ -105,8 +134,13 @@ def test_run_head_to_head_cv_and_summary(tmp_path, toy_datasets):
     rows = run_all.run_head_to_head(toy_datasets, tmp_path, seed=0)
     assert (tmp_path / "head_to_head_cv.csv").exists()
     assert (tmp_path / "head_to_head_summary.csv").exists()
+    assert (tmp_path / "head_to_head_significance.csv").exists()
     models = {row["model"] for row in rows}
     assert {"Single Tree", "AdaBoost", "Random Forest", "sklearn RF reference"} <= models
+    significance_rows = _read_csv(tmp_path / "head_to_head_significance.csv")
+    assert {row["dataset"] for row in significance_rows} == {dataset.name for dataset in toy_datasets}
+    assert "accuracy_p_value" in significance_rows[0]
+    assert "accuracy_p_value_holm" in significance_rows[0]
 
 
 def test_run_noise_robustness_all_levels(tmp_path, toy_datasets):
@@ -126,8 +160,11 @@ def test_run_bias_variance_decomposition(tmp_path, monkeypatch):
     The production experiment intentionally uses B=100 bootstrap replicates and
     non-trivial ensembles, which is appropriate for the paper but too slow for a
     unit-test/autograder smoke path. Here we monkeypatch only the estimator
-    classes and synthetic split generator so the same run_bias_variance control
-    flow, CSV writer, plotting, and 0-1 decomposition code are covered quickly.
+    classes and prepared real-data split so the same run_bias_variance control
+    flow, CSV writer, plotting, and 0-1 decomposition code are covered quickly,
+    while also ensuring that the complete evaluation pipeline executes correctly
+    and produces the expected output artifacts without the computational cost of
+    the full experimental setup.
     """
 
     class TinyClassifier:
@@ -151,7 +188,7 @@ def test_run_bias_variance_decomposition(tmp_path, monkeypatch):
         y_fit=np.array([0, 0, 1, 1], dtype=object),
     )
 
-    monkeypatch.setattr(run_all, "make_balanced_bias_variance_split", lambda seed: tiny_split)
+    monkeypatch.setattr(run_all, "prepare_split", lambda dataset, seed: tiny_split)
     monkeypatch.setattr(run_all, "DecisionStump", TinyClassifier)
     monkeypatch.setattr(run_all, "DecisionTree", TinyClassifier)
     monkeypatch.setattr(run_all, "AdaBoostClassifier", TinyClassifier)
@@ -161,7 +198,7 @@ def test_run_bias_variance_decomposition(tmp_path, monkeypatch):
     results_dir = tmp_path / "results"
     figures_dir.mkdir()
     results_dir.mkdir()
-    dummy = _toy_dataset()  # unused positionally by run_bias_variance's own synthetic data
+    dummy = _toy_dataset("Breast Cancer Wisconsin")
     run_all.run_bias_variance(dummy, figures_dir, results_dir, seed=0)
     rows = _read_csv(results_dir / "bias_variance.csv")
     models = {row["model"] for row in rows}
@@ -271,6 +308,55 @@ def test_validate_and_replot_heavy_outputs_detects_bad_schema(tmp_path):
     (results_dir / "random_forest_estimators.csv").write_text("dataset,n_estimators\nToy,1\n")
     with pytest.raises(RuntimeError):
         run_all.validate_and_replot_heavy_outputs(results_dir, figures_dir)
+
+
+def test_reuse_rejects_stale_dataset_metadata(tmp_path):
+    figures_dir = tmp_path / "figures"
+    results_dir = tmp_path / "results"
+    figures_dir.mkdir()
+    results_dir.mkdir()
+    (results_dir / "dataset_metadata.json").write_text("{}", encoding="utf-8")
+    (results_dir / "run_summary.json").write_text("{}", encoding="utf-8")
+
+    with pytest.raises(RuntimeError, match="metadata"):
+        run_all.validate_reusable_outputs(
+            results_dir,
+            figures_dir,
+            {"Breast Cancer Wisconsin": {"fingerprint_sha256": "new"}},
+            seed=42,
+        )
+
+
+def test_build_dataset_metadata_locks_sizes_targets_and_provenance():
+    distributions = {
+        "Breast Cancer Wisconsin": {0: 212, 1: 357},
+        "Adult Income": {0: 37_155, 1: 11_687},
+        "Covertype": {1: 18_230, 2: 24_380, 3: 3_077, 4: 236, 5: 817, 6: 1_495, 7: 1_765},
+        "MNIST2Class": {0: 6_903, 1: 7_877},
+    }
+    bundles = []
+    for name, counts in distributions.items():
+        y = np.concatenate([np.full(count, label, dtype=object) for label, count in counts.items()])
+        bundles.append(
+            DatasetBundle(
+                name=name,
+                X=np.zeros((y.size, 1), dtype=float),
+                y=y,
+                source="authoritative fixture",
+                source_version="v1",
+                selection_rule="locked fixture",
+                description="metadata test",
+                raw_samples=y.size,
+            )
+        )
+
+    metadata = run_all.build_dataset_metadata(bundles, seed=42)
+
+    assert {name: values["samples"] for name, values in metadata.items()} == run_all.CANONICAL_DATASET_ROWS
+    assert metadata["Covertype"]["class_distribution"] == {
+        str(label): count for label, count in distributions["Covertype"].items()
+    }
+    assert all(values["fingerprint_sha256"] for values in metadata.values())
 
 
 def test_assignment_path_shims_reexport_real_classes():
