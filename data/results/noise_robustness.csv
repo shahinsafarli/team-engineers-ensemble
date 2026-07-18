@@ -5,15 +5,21 @@ Breast Cancer Wisconsin,0.1,AdaBoost,0.9469026548672567
 Breast Cancer Wisconsin,0.1,Random Forest,0.9292035398230089
 Breast Cancer Wisconsin,0.2,AdaBoost,0.9292035398230089
 Breast Cancer Wisconsin,0.2,Random Forest,0.9469026548672567
-Digits High-Dimensional,0.05,AdaBoost,0.78
-Digits High-Dimensional,0.05,Random Forest,0.92
-Digits High-Dimensional,0.1,AdaBoost,0.77
-Digits High-Dimensional,0.1,Random Forest,0.94
-Digits High-Dimensional,0.2,AdaBoost,0.69
-Digits High-Dimensional,0.2,Random Forest,0.91
-Covertype Rare Class,0.05,AdaBoost,0.988
-Covertype Rare Class,0.05,Random Forest,0.99
-Covertype Rare Class,0.1,AdaBoost,0.986
-Covertype Rare Class,0.1,Random Forest,0.992
-Covertype Rare Class,0.2,AdaBoost,0.99
-Covertype Rare Class,0.2,Random Forest,0.991
+Adult Income,0.05,AdaBoost,0.8562653562653563
+Adult Income,0.05,Random Forest,0.8664004914004914
+Adult Income,0.1,AdaBoost,0.8571867321867321
+Adult Income,0.1,Random Forest,0.867014742014742
+Adult Income,0.2,AdaBoost,0.8549344799344799
+Adult Income,0.2,Random Forest,0.8630221130221131
+Covertype,0.05,AdaBoost,0.6010601060106011
+Covertype,0.05,Random Forest,0.8032803280328032
+Covertype,0.1,AdaBoost,0.6749674967496749
+Covertype,0.1,Random Forest,0.8065806580658066
+Covertype,0.2,AdaBoost,0.6783678367836784
+Covertype,0.2,Random Forest,0.8014801480148015
+MNIST2Class,0.05,AdaBoost,0.9884979702300406
+MNIST2Class,0.05,Random Forest,0.9993234100135318
+MNIST2Class,0.1,AdaBoost,0.9874830852503383
+MNIST2Class,0.1,Random Forest,0.9986468200270636
+MNIST2Class,0.2,AdaBoost,0.9881596752368065
+MNIST2Class,0.2,Random Forest,0.9986468200270636
