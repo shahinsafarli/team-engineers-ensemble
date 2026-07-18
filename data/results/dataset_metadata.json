@@ -1,46 +1,79 @@
 {
   "Breast Cancer Wisconsin": {
-    "source": "sklearn.datasets.load_breast_cancer",
-    "description": "Binary medical diagnosis dataset with 30 continuous features.",
+    "source": "scikit-learn load_breast_cancer (UCI Wisconsin Diagnostic Breast Cancer)",
+    "source_version": "scikit-learn packaged full dataset",
+    "description": "Binary malignant/benign diagnosis data with 30 continuous features.",
+    "selection_rule": "All 569 rows; no sampling.",
     "samples": 569,
+    "raw_samples": 569,
     "features": 30,
     "class_distribution": {
       "0": 212,
       "1": 357
     },
+    "preprocessing": "Numeric median imputation and standard scaling fitted on training rows only.",
     "severe_imbalance": false,
-    "high_dimensional": true
+    "high_dimensional": true,
+    "seed": 42,
+    "fingerprint_sha256": "c50a4e8b7b872cd298f9c0031643bf2b4e339c8c346343aed51a8ba5c7b22194"
   },
-  "Digits High-Dimensional": {
-    "source": "sklearn.datasets.load_digits, stratified 500-sample subset",
-    "description": "Ten-class handwritten digit images represented by 64 pixel features.",
-    "samples": 500,
-    "features": 64,
+  "Adult Income": {
+    "source": "UCI Adult adult.data + adult.test",
+    "source_version": "UCI dataset 2; original train/test files",
+    "description": "Binary income classification with six numeric and eight categorical raw features.",
+    "selection_rule": "All 32,561 training and 16,281 test records combined; no rows dropped.",
+    "samples": 48842,
+    "raw_samples": 48842,
+    "features": 14,
     "class_distribution": {
-      "0": 50,
-      "1": 51,
-      "2": 49,
-      "3": 51,
-      "4": 50,
-      "5": 51,
-      "6": 50,
-      "7": 50,
-      "8": 48,
-      "9": 50
+      "0": 37155,
+      "1": 11687
     },
+    "preprocessing": "Training-only numeric median imputation and scaling; training-only categorical mode imputation and one-hot encoding; unseen categories map to all-zero indicator groups.",
     "severe_imbalance": false,
-    "high_dimensional": true
+    "high_dimensional": false,
+    "seed": 42,
+    "fingerprint_sha256": "dac426d51841b8734363ee6276b4864143df97c4c39bdb13354d3aae992a91bf"
   },
-  "Covertype Rare Class": {
-    "source": "bundled data/covertype_rare_class.npz generated from sklearn.datasets.fetch_covtype",
-    "description": "Real forest-cover dataset recast as a severe rare-class detection task.",
-    "samples": 5000,
+  "Covertype": {
+    "source": "scikit-learn fetch_covtype (UCI Covertype)",
+    "source_version": "UCI dataset 31 / scikit-learn fetch_covtype",
+    "description": "Seven-class forest cover type classification with 54 numeric/binary features.",
+    "selection_rule": "Seed 42 exact largest-remainder stratified sample of 50,000 from all 581,012 rows.",
+    "samples": 50000,
+    "raw_samples": 581012,
     "features": 54,
     "class_distribution": {
-      "0": 4950,
-      "1": 50
+      "1": 18230,
+      "2": 24380,
+      "3": 3077,
+      "4": 236,
+      "5": 817,
+      "6": 1495,
+      "7": 1765
     },
+    "preprocessing": "Numeric median imputation and standard scaling fitted on training rows only.",
     "severe_imbalance": true,
-    "high_dimensional": true
+    "high_dimensional": true,
+    "seed": 42,
+    "fingerprint_sha256": "01ac398aed329b1c531903c62c61fd8dcac11acda8b2fc29068045c375c3a645"
+  },
+  "MNIST2Class": {
+    "source": "OpenML data_id=554, mnist_784 version 1",
+    "source_version": "OpenML dataset 554 v1",
+    "description": "Binary handwritten digit classification using all MNIST zeros and ones.",
+    "selection_rule": "All 6,903 zeros and all 7,877 ones; no sampling.",
+    "samples": 14780,
+    "raw_samples": 70000,
+    "features": 784,
+    "class_distribution": {
+      "0": 6903,
+      "1": 7877
+    },
+    "preprocessing": "Numeric median imputation and standard scaling fitted on training rows only.",
+    "severe_imbalance": false,
+    "high_dimensional": true,
+    "seed": 42,
+    "fingerprint_sha256": "ce9f605917f51ceff677507a9a9b57026462e691ba46a920142fdc9de4559d7a"
   }
 }
